@@ -26,6 +26,7 @@ import collections
 from concurrent import futures
 
 import grpc
+import google.protobuf.any_pb2
 import tensorflow.compat.v1 as tf
 
 from fedlearner.common import common_pb2 as common_pb
@@ -193,8 +194,8 @@ class Bridge(object):
         assert self._connected, "Cannot transmit before connect"
         with self._transmit_receive_lock:
             logging.debug("Received message seq_num=%d."
-                          " Current seq_num=%d.",
-                          request.seq_num, self._next_receive_seq_num)
+                        " Current seq_num=%d.",
+                        request.seq_num, self._next_receive_seq_num)
             if request.seq_num >= self._next_receive_seq_num:
                 assert request.seq_num == self._next_receive_seq_num, \
                     "Invalid request. Expecting seq_num=%d, got %d"%(
@@ -211,8 +212,7 @@ class Bridge(object):
                         assert request.data.iter_id in self._received_data
                         self._received_data[
                             request.data.iter_id][
-                                request.data.name] = \
-                                    tf.make_ndarray(request.data.tensor)
+                                request.data.name] = request.data
                         self._condition.notifyAll()
                 elif request.HasField('prefetch'):
                     for func in self._prefetch_handlers:
@@ -308,6 +308,10 @@ class Bridge(object):
             pass
         self._server.stop(None)
         logging.debug("Bridge connection terminated")
+    
+    @property
+    def current_iter_id(self):
+        return self._current_iter_id
 
     def new_iter_id(self):
         iter_id = self._next_iter_id
@@ -352,6 +356,15 @@ class Bridge(object):
         msg = tws_pb.TrainerWorkerMessage(prefetch=tws_pb.PrefetchMessage(
             iter_id=iter_id, sample_ids=sample_ids))
         self._transmit(msg)
+    
+    def send_proto(self, iter_id, name, proto):
+        any_proto = google.protobuf.any_pb2.Any()
+        any_proto.Pack(proto)
+        msg = tws_pb.TrainerWorkerMessage(data=tws_pb.DataMessage(
+            iter_id=iter_id, name=name, any_data=any_proto))
+        self._transmit(msg)
+        logging.debug('Data: send protobuf %s for iter %d. seq_num=%d.',
+                      name, iter_id, msg.seq_num)
 
     def send(self, iter_id, name, x):
         msg = tws_pb.TrainerWorkerMessage(data=tws_pb.DataMessage(
@@ -368,6 +381,17 @@ class Bridge(object):
         out = tf.py_function(func=func, inp=[x], Tout=[], name='send_' + name)
         return out
 
+    def receive_proto(self, iter_id, name):
+        logging.debug('Data: Waiting to receive proto %s for iter %d.',
+                      name, iter_id)
+        with self._condition:
+            while (iter_id not in self._received_data) \
+                    or (name not in self._received_data[iter_id]):
+                self._condition.wait()
+            data = self._received_data[iter_id][name]
+        logging.debug('Data: received %s for iter %d.', name, iter_id)
+        return data.any_data
+
     def receive(self, iter_id, name):
         logging.debug('Data: Waiting to receive %s for iter %d.', name,
                       iter_id)
@@ -375,9 +399,9 @@ class Bridge(object):
             while (iter_id not in self._received_data) \
                     or (name not in self._received_data[iter_id]):
                 self._condition.wait()
-            x = self._received_data[iter_id][name]
+            data = self._received_data[iter_id][name]
         logging.debug('Data: received %s for iter %d.', name, iter_id)
-        return x
+        return tf.make_ndarray(data.tensor)
 
     def receive_op(self, name, dtype):
         def func():

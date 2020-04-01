@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package fedlearner.common;
+
+message RegressionTreeNodeProto {
+    int32 node_id = 1;
+    int32 left_child = 2;
+    int32 right_child = 3;
+    int32 parent = 4;
+
+    bool is_owner = 5;
+    int32 owner_id = 6;
+    string feature_id = 7;
+    float threshold = 8;
+
+    float weight = 9;
+}
+
+message RegressionTreeProto {
+    repeated RegressionTreeNodeProto nodes = 1;
+};
+
+message BoostingParamsProto {
+    int32 num_round = 1;
+    int32 max_depth = 2;
+    float eta = 3;
+    float lam = 4;
+    float sketch_eps = 5;
+}
+
+message BoostingTreeEnsambleProto {
+    repeated RegressionTreeProto trees = 1;
+    BoostingParamsProto params = 2;
+};
+
+message EncryptedNumbers {
+    repeated bytes ciphertext = 1;
+}
+
+message Histograms {
+    repeated string feature_ids = 1;
+    repeated EncryptedNumbers hists = 2;
+}
+
+message SplitInfo {
+    int32 owner_id = 1;
+    string feature_id = 2;
+    int32 split_point = 3;
+}
