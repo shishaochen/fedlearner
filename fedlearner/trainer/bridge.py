@@ -139,18 +139,29 @@ class Bridge(object):
 
                 generator = client.StreamTransmit(iterator())
                 for response in generator:
-                    if response.status.code != common_pb.STATUS_SUCCESS:
+                    if response.status.code == common_pb.STATUS_SUCCESS:
+                        logging.debug("Message with seq_num=%d is "
+                            "confirmed", response.next_seq_num-1)
+                    elif response.status.code == \
+                        common_pb.STATUS_MESSAGE_DUPLICATED:
+                        logging.debug("Resent Message with seq_num=%d is "
+                            "confirmed", response.next_seq_num-1)
+                    elif response.status.code == \
+                        common_pb.STATUS_MESSAGE_MISSING:
+                        raise RuntimeError("Message with seq_num=%d is "
+                            "missing!" % response.next_seq_num-1)
+                    else:
                         raise RuntimeError("Trainsmit failed with %d" %
                                            response.status.code)
                     with lock:
                         while resend_list and \
                                 resend_list[0].seq_num < response.next_seq_num:
                             resend_list.popleft()
-                    logging.debug(
-                        "Streaming confirmed sending message seq_num=%d. "
-                        "Resend queue size: %d, starting from seq_num=%s",
-                        response.next_seq_num-1, len(resend_list),
-                        resend_list and resend_list[0].seq_num or "NaN")
+                        min_seq_num_to_resend = resend_list[0].seq_num \
+                            if resend_list else "NaN"
+                        logging.debug(
+                            "Resend queue size: %d, starting from seq_num=%s",
+                            len(resend_list), min_seq_num_to_resend)
             except Exception as e:  # pylint: disable=broad-except
                 if not shutdown[0]:
                     logging.warning("Bridge streaming broken: %s. " \
@@ -193,12 +204,19 @@ class Bridge(object):
         assert self._connected, "Cannot transmit before connect"
         with self._transmit_receive_lock:
             logging.debug("Received message seq_num=%d."
-                          " Current seq_num=%d.",
+                          " Wanted seq_num=%d.",
                           request.seq_num, self._next_receive_seq_num)
-            if request.seq_num >= self._next_receive_seq_num:
-                assert request.seq_num == self._next_receive_seq_num, \
-                    "Invalid request. Expecting seq_num=%d, got %d"%(
-                        self._next_receive_seq_num, request.seq_num)
+            if request.seq_num > self._next_receive_seq_num:
+                return tws_pb.TrainerWorkerResponse(
+                    status=common_pb.Status(
+                        code=common_pb.STATUS_MESSAGE_MISSING),
+                    next_seq_num=self._next_receive_seq_num)
+            elif request.seq_num < self._next_receive_seq_num:
+                return tws_pb.TrainerWorkerResponse(
+                    status=common_pb.Status(
+                        code=common_pb.STATUS_MESSAGE_DUPLICATED),
+                    next_seq_num=self._next_receive_seq_num)
+            else:  # request.seq_num == self._next_receive_seq_num
                 self._next_receive_seq_num += 1
 
                 if request.HasField('start'):
@@ -223,8 +241,8 @@ class Bridge(object):
                             code=common_pb.STATUS_INVALID_REQUEST),
                         next_seq_num=self._next_receive_seq_num)
 
-            return tws_pb.TrainerWorkerResponse(
-                next_seq_num=self._next_receive_seq_num)
+                return tws_pb.TrainerWorkerResponse(
+                    next_seq_num=self._next_receive_seq_num)
 
     def _data_block_handler(self, request):
         assert self._connected, "Cannot load data before connect"
