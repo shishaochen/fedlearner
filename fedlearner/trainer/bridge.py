@@ -211,38 +211,39 @@ class Bridge(object):
                     status=common_pb.Status(
                         code=common_pb.STATUS_MESSAGE_MISSING),
                     next_seq_num=self._next_receive_seq_num)
-            elif request.seq_num < self._next_receive_seq_num:
+            if request.seq_num < self._next_receive_seq_num:
                 return tws_pb.TrainerWorkerResponse(
                     status=common_pb.Status(
                         code=common_pb.STATUS_MESSAGE_DUPLICATED),
                     next_seq_num=self._next_receive_seq_num)
-            else:  # request.seq_num == self._next_receive_seq_num
-                self._next_receive_seq_num += 1
 
-                if request.HasField('start'):
-                    with self._condition:
-                        self._received_data[request.start.iter_id] = {}
-                elif request.HasField('commit'):
-                    pass
-                elif request.HasField('data'):
-                    with self._condition:
-                        assert request.data.iter_id in self._received_data
-                        self._received_data[
-                            request.data.iter_id][
-                                request.data.name] = \
-                                    tf.make_ndarray(request.data.tensor)
-                        self._condition.notifyAll()
-                elif request.HasField('prefetch'):
-                    for func in self._prefetch_handlers:
-                        func(request.prefetch)
-                else:
-                    return tws_pb.TrainerWorkerResponse(
-                        status=common_pb.Status(
-                            code=common_pb.STATUS_INVALID_REQUEST),
-                        next_seq_num=self._next_receive_seq_num)
+            # request.seq_num == self._next_receive_seq_num
+            self._next_receive_seq_num += 1
 
+            if request.HasField('start'):
+                with self._condition:
+                    self._received_data[request.start.iter_id] = {}
+            elif request.HasField('commit'):
+                pass
+            elif request.HasField('data'):
+                with self._condition:
+                    assert request.data.iter_id in self._received_data
+                    self._received_data[
+                        request.data.iter_id][
+                            request.data.name] = \
+                                tf.make_ndarray(request.data.tensor)
+                    self._condition.notifyAll()
+            elif request.HasField('prefetch'):
+                for func in self._prefetch_handlers:
+                    func(request.prefetch)
+            else:
                 return tws_pb.TrainerWorkerResponse(
+                    status=common_pb.Status(
+                        code=common_pb.STATUS_INVALID_REQUEST),
                     next_seq_num=self._next_receive_seq_num)
+
+            return tws_pb.TrainerWorkerResponse(
+                next_seq_num=self._next_receive_seq_num)
 
     def _data_block_handler(self, request):
         assert self._connected, "Cannot load data before connect"
